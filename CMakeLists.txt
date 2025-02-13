@@ -9,4 +9,7 @@ add_executable(Bat_Algorithm main.cpp
         BA.cpp
         BA.h
         Agent.cpp
-        Agent.h)
+        Agent.h
+        kernel.cpp
+        kernel.cu
+        kernel.h)
