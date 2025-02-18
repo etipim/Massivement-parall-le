@@ -52,25 +52,94 @@
 //}
 
 void BA_CUDAS() {
+    // Ouverture du fichier CSV unique
+    std::ofstream resultFile("results.csv");
+
+    // Écriture des en-têtes avec chaque itération en colonne
+    resultFile << "ObjectiveFunction,Dimension,PopulationSize";
+    for (int iter = 0; iter < 10; ++iter) {
+        resultFile << ",Iteration_" << iter + 1 << ",GPU_Time";
+    }
+    resultFile << "\n";
+
+    for (int objFunc : objectiveFunctions) {
+        for (int dim : dimensions) {
+            for (int popSize : popSizes) {
+                resultFile << objFunc << "," << dim << "," << popSize;
+
+                for (int iter = 0; iter < 10; ++iter) {
+                    double positions[dim * popSize];
+                    double velocities[dim * popSize];
+                    double targets[popSize];
+                    double g_best[dim];
+                    double best_target;
+
+                    for (int i = 0; i < dim * popSize; ++i) {
+                        // Init positions pop
+                        positions[i] = getRandom(Lb, Ub);
+                        // Init velocities
+                        velocities[i] = 0;
+                    }
+
+                    // Init targets
+                    for (int i = 0; i < popSize; ++i) {
+                        double bat[dim];
+                        for (int j = 0; j < dim; ++j) {
+                            bat[j] = positions[i * dim + j];
+                        }
+                        targets[i] = host_init_target(bat, objFunc, dim);
+                    }
+
+                    // Trouver la meilleure solution
+                    int best_index = index_best_target(targets, popSize);
+                    for (int j = 0; j < dim; ++j) {
+                        g_best[j] = positions[best_index * dim + j];
+                    }
+                    best_target = host_init_target(g_best, objFunc, dim);
+
+                    // Exécution GPU
+                    clock_t begin = clock();
+                    cuda_pso(positions, velocities, targets, g_best, best_target, popSize, dim, objFunc);
+                    clock_t end = clock();
+
+                    double gpu_time = (double)(end - begin) / CLOCKS_PER_SEC;
+
+                    // Affichage console
+                    printf("GPU Time: %10.3lf s\n", gpu_time);
+                    printf("Print final target : %f \n", best_target);
+
+                    // Ajout du résultat en colonne et ajout du temps GPU total
+                    resultFile << "," << host_init_target(g_best, objFunc, dim) << "," << gpu_time / 10;
+                }
+
+                resultFile << "\n";
+            }
+        }
+    }
+    resultFile.close();/*
 
     const int test_dimension = 10;
     const int test_pop_size = 30;
     const int test_objectiveFunctions = 1;
 
-    float positions[test_dimension*test_pop_size];
-    float velocities[test_pop_size];
-    float targets[test_pop_size];
-    float g_best[test_dimension];
-    float best_target;
+    double positions[test_dimension*test_pop_size];
+    double velocities[test_dimension*test_pop_size];
+    double targets[test_pop_size];
+    double g_best[test_dimension];
+    double best_target;
 
     for (int i = 0; i < test_dimension*test_pop_size; ++i) {
+        // init positions pop
         positions[i] = getRandom(Lb, Ub);
+
+        // init vélocité
+        velocities[i] = 0;
     }
 
     for (int i = 0; i < test_pop_size; ++i) {
 
         // découpage par bat
-        float bat[test_dimension];
+        double bat[test_dimension];
         for (int j = 0; j < test_dimension; ++j) {
             bat[j] = positions[i * test_dimension + j];
         }
@@ -78,8 +147,7 @@ void BA_CUDAS() {
         // init taget
         targets[i] = host_init_target(bat, test_objectiveFunctions, test_dimension);
 
-        // init vélocité
-        velocities[i] = 0;
+
     }
 
     // Trouver l'index de la meilleure chauve-souris
@@ -90,31 +158,25 @@ void BA_CUDAS() {
         g_best[j] = positions[best_index * test_dimension + j];
     }
 
-    // Vérification
-    printf("Initial g_best values:\n");
-    for (int j = 0; j < test_dimension; ++j) {
-        printf("g_best[%d] = %f\n", j, g_best[j]);
-    }
-
     // Meilleur précision
-    best_target = targets[0];
+    best_target = host_init_target(g_best, test_objectiveFunctions, test_dimension);
 
     // Appel de la fonction CUDA
+    clock_t begin = clock();
     cuda_pso(positions, velocities, targets, g_best, best_target, test_pop_size, test_dimension, test_objectiveFunctions);
+    clock_t end = clock();
 
-    // Affichage des premières valeurs
-    printf("First value of positions: %f\n", positions[0]);
-    printf("First value of velocities: %f\n", velocities[0]);
-    printf("First value of targets: %f\n", targets[0]);
+    printf("GPU \t ");
+    printf("%10.3lf \t", (double)(end - begin)/CLOCKS_PER_SEC);*/
 
 }
 
 
 int main()
 {
-        //BA();
-        BA_CUDAS();
+    //BA();
+    BA_CUDAS();
 
-        return 0;
+    return 0;
 }
 

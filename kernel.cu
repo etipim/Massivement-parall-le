@@ -10,13 +10,17 @@
 #include "kernel.h"
 
 // Calcul de la fonction objective
-__device__ float init_target(float *bat, int fit_function, int dimension)
+__device__ double init_target(double *bat, int fit_function, int dimension)
 {
-    float sum = 0;
+    double sum = 0;
+
+    double sum1 = 0;
+    double sum2 = 0;
 
     for (int i = 0; i < dimension; ++i) {
         // Sphère
         if (fit_function == 1) {
+            //printf("bat %i : %f \n", i, bat[i]);
             sum += powf((bat[i]), 2); // (bat->solution[i] - 2) * (bat->solution[i] - 2);
         }
 
@@ -32,29 +36,49 @@ __device__ float init_target(float *bat, int fit_function, int dimension)
                        powf((1 - bat[i]), 2);
             }
         }
+
+            // Ackley
+        else if (fit_function == 4) {
+            sum1 += std::pow(bat[i], 2);
+            sum2 += std::cos(2.0 * phi * bat[i]);
+        }
+    }
+
+    if (fit_function == 4) {
+        double term1 = -20.0 * std::exp(-0.2 * std::sqrt(sum1 / dimension));
+        double term2 = -std::exp(sum2 / dimension);
+
+        sum = term1 + term2 + 20.0 + std::exp(1.0);
     }
 
     return sum;
 }
 
+__global__ void init_curand(curandState *state) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    curand_init(clock() + i, i, 0, &state[i]);
+}
+
 // Réalisation du bat algo
-__global__ void update_position(float* pop, float* new_pop, float* velocity, float* g_best, int popSize, int dimension, int fit_function)
+__global__ void update_position(double* pop, double* new_pop, double* velocity, double* g_best, int pop_size, int dimension, int fit_function, curandState *state)
 {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
-    curandState state;
-    curand_init(clock64() + i, 0, 0, &state);
+    if (i >= pop_size) return;
+
+    //curandState state;
+    //curand_init(clock64() + i, 0, 0, &state);
 
     // change pulse frequency
-    float rand_frequence = curand_uniform(&state);
-    float pulse_frequence = pfMin + (pfMax + pfMin) * rand_frequence;
+    double rand_frequence = curand_uniform(&state[i]);
+    double pulse_frequence = pfMin + (pfMax + pfMin) * rand_frequence;
 
     for (int j = 0; j < dimension; j++){
         // change velocity
-        float rand_velocity = curand_uniform(&state);
+        double rand_velocity = curand_uniform(&state[i]);
         velocity[i * dimension + j] = rand_velocity * velocity[i * dimension + j] + (g_best[j] - pop[i * dimension + j]) * pulse_frequence; // Eq.3
-
+        //printf("velo : %f \n", velocity[i * dimension + j]);
         // Update the solution based on the updated velocity
-        float new_solution = pop[i * dimension + j] + velocity[i * dimension + j];
+        double new_solution = pop[i * dimension + j] + velocity[i * dimension + j];
 
         // change solution and insert born
         if (new_solution > Ub){
@@ -67,38 +91,15 @@ __global__ void update_position(float* pop, float* new_pop, float* velocity, flo
             new_pop[i * dimension + j] = new_solution;  // Eq. 4
         }
     }
-
-//    // Génère aléatoirement la population de chauves souris
-//    curandState state;
-//    curand_init(clock64() + idx, 0, 0, &state);
-//    double rand_val = curand_uniform(&state);
-//
-//    pop[idx] = Lb + (Ub - Lb) * rand_val;
-//
-//    // Calcul la position des chauves souris
-//    target[idx] = init_target(pop, fit_function, dimension);
-//
-//    // initialisation la vélocité des chauves souris à 0
-//    velocity[idx] = 0;
-//
-//    //__syncthreads();
-//
-//    // Initialisation de la meilleure cible
-//    if (idx == 0) {
-//        best_target = target[0];
-//    }
-
-    //__syncthreads();  // Synchroniser avant l'affichage final
-
-    // Debug: Afficher les valeurs après mise à jour
-    //printf("Thread %d: Après maj | new_pop[0] = %f, velocity[0] = %f\n", i, new_pop[i * dimension], velocity[i]);
 }
 
 // Vérification des performances
-__global__ void check_new_pos(float *pop, float *new_pop, float *pop_child, bool *pop_child_idx, float *targets, float *g_best, float *bat, int fit_function, int dimension){
+__global__ void check_new_pos(double *pop, double *new_pop, double *pop_child, bool *pop_child_idx, double *targets, double *g_best, int fit_function, int dimension, int pop_size, curandState *state){
     int i = threadIdx.x + blockIdx.x * blockDim.x;
-    curandState state;
-    curand_init(clock64() + i, 0, 0, &state);
+    if (i >= pop_size) return;
+
+    // Déclarer un tableau local pour éviter les conflits entre threads
+    double* bat = new double[dimension];
 
     // découpage par bat
     for (int j = 0; j < dimension; ++j) {
@@ -106,23 +107,28 @@ __global__ void check_new_pos(float *pop, float *new_pop, float *pop_child, bool
     }
 
     // Calcul de la performance de la chauve souris
-    float new_target = init_target(bat, fit_function, dimension);
+    double new_target = init_target(bat, fit_function, dimension);
+    //printf("new_target : %f \n", new_target);
+    //printf("targets : %f \n", targets[i]);
 
     // Si la chauve souris est mieux positioné que avant on change ça position
     if (targets[i] > new_target){
+        //printf("update pop %i \n", i);
         for(int j = 0; j < dimension; j++){
             pop[i * dimension + j] = new_pop[i * dimension + j];
+            //printf("pop %i : %f \n", j, pop[i * dimension + j]);
         }
 
         targets[i] = new_target;
     } else {
         // éxection d'une pulsation aléatoire
-        float rand_pulse = curand_uniform(&state);
+        double rand_pulse = curand_uniform(&state[i]);
         if (rand_pulse > pulse_rate) {
+            //printf("create pop child %i \n", i);
             for (int j = 0; j < dimension; j++){
                 // add solution close to best
-                float rand_best = curand_uniform(&state);
-                float new_solution = g_best[j] + 0.01 * rand_best;
+                double rand_best = curand_uniform(&state[i]);
+                double new_solution = g_best[j] + 0.01 * rand_best;
 
                 // change solution and insert born
                 if (new_solution > Ub){
@@ -133,6 +139,7 @@ __global__ void check_new_pos(float *pop, float *new_pop, float *pop_child, bool
                 }
                 else {
                     pop_child[i * dimension + j] = new_solution;
+                    //printf("pop %i : %f \n", j, pop_child[i * dimension + j]);
                 }
             }
 
@@ -140,59 +147,146 @@ __global__ void check_new_pos(float *pop, float *new_pop, float *pop_child, bool
             pop_child_idx[i] = true;
         }
     }
+
+    delete[] bat;
 }
 
-//
-extern "C" void cuda_pso(float* positions, float* velocities, float* targets, float* g_best, float best_target, int pop_size, int dimension, int fit_function)
+// Edit new_pop with pop_child
+__global__ void update_new_pop(double* new_pop, double* pop_child, bool* pop_child_idx, int pop_size, int dimension, int fit_function){
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i >= pop_size) return;
+
+    if (pop_child_idx[i]){
+
+        double* bat = new double[dimension];
+
+        // découpage et clacul taget pour la bat de new_pop
+        for (int j = 0; j < dimension; ++j) {
+            bat[j] = new_pop[i * dimension + j];
+        }
+        double new_target = init_target(bat, fit_function, dimension);
+
+        // découpage et clacul taget pour la bat de pop_child
+        for (int j = 0; j < dimension; ++j) {
+            bat[j] = pop_child[i * dimension + j];
+        }
+        double target_child = init_target(bat, fit_function, dimension);
+
+        if (new_target > target_child){
+            for (int j = 0; j < dimension; j++){
+                new_pop[i * dimension + j] = pop_child[i * dimension + j];
+            }
+        }
+
+        delete[] bat;
+    }
+}
+
+/**
+ * Runs on the GPU, called from the CPU or the GPU
+*/
+__global__ void Update_target_and_pop(double *positions, double *new_pop, double *target, int pop_size, int dimension, int fit_function){
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if(i >= pop_size)
+        return;
+
+    double* bat = new double[dimension];
+
+    for (int j = 0; j < dimension; ++j) {
+        positions[i * dimension + j] = new_pop[i * dimension + j];
+        bat[j] = new_pop[i * dimension + j];
+    }
+
+    target[i] = init_target(bat, fit_function, dimension);
+
+
+    delete[] bat;
+
+}
+
+/**
+ * Runs on the GPU, called from the CPU or the GPU
+*/
+__global__ void kernel_update_g_Best(double *positions, double *g_best, int pop_size, int dimension, int fit_function)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if(i >= pop_size)
+        return;
+
+    double* bat = new double[dimension];
+
+    // récupère une chauves-souris
+    for (int j = 0; j < dimension; ++j) {
+        bat[j] = positions[i * dimension + j];
+    }
+
+    if (init_target(bat, fit_function, dimension) < init_target(g_best, fit_function, dimension))
+    {
+        for (int k = 0; k < dimension; k++)
+            g_best[k] = positions[i * dimension + k];
+    }
+
+    delete[] bat;
+}
+
+// cuda function
+void cuda_pso(double* positions, double* velocities, double* targets, double* g_best, double best_target, int pop_size, int dimension, int fit_function)
 {
     int size = pop_size * dimension;
 
     // declare all the arrays on the device
-    float *devPos;
-    float *devNewPos;
-    float *devVel;
-    float *devTar;
-    float *devBst;
-    float *devPosChl;
-    float *devBat;
+    double *devPos;
+    double *devNewPos;
+    double *devVel;
+    double *devTar;
+    double *devBst;
+    double *devPosChl;
     bool *devPosChlIdx;
+    curandState *devStates;
+
 
     // Memory allocation
-    cudaMalloc((void**)&devPos, sizeof(float) * size);
-    cudaMalloc((void**)&devNewPos, sizeof(float) * size);
-    cudaMalloc((void**)&devVel, sizeof(float) * pop_size);
-    cudaMalloc((void**)&devTar, sizeof(float) * pop_size);
-    cudaMalloc((void**)&devBst, sizeof(float) * dimension);
-    cudaMalloc((void**)&devPosChl, sizeof(float) * size);
-    cudaMalloc((void**)&devBat, sizeof(float) * dimension);
+    cudaMalloc((void**)&devPos, sizeof(double) * size);
+    cudaMalloc((void**)&devNewPos, sizeof(double) * size);
+    cudaMalloc((void**)&devVel, sizeof(double) * size);
+    cudaMalloc((void**)&devTar, sizeof(double) * pop_size);
+    cudaMalloc((void**)&devBst, sizeof(double) * dimension);
+    cudaMalloc((void**)&devPosChl, sizeof(double) * size);
     cudaMalloc((void**)&devPosChlIdx, sizeof(bool) * pop_size);
+    cudaMalloc((void **)&devStates, pop_size * sizeof(curandState));
 
     // Thread & Block number
-    int threadsNum = 256;
-    //int blocksNum = ceil(size / threadsNum);
+    int threadsNum = 64;
     int blocksNum = (pop_size + threadsNum - 1) / threadsNum;
 
-    // Copy particle datas from host to device
-    /**
-     * Copy in GPU memory the data from the host
-     * */
-    cudaMemcpy(devPos, positions, sizeof(float) * size, cudaMemcpyHostToDevice);
-    cudaMemcpy(devVel, velocities, sizeof(float) * pop_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(devTar, targets, sizeof(float) * pop_size, cudaMemcpyHostToDevice);
-    cudaMemcpy(devBst, g_best, sizeof(float) * dimension, cudaMemcpyHostToDevice);
+    // Initialisation des générateurs de nombres aléatoires
+    init_curand<<<blocksNum, threadsNum>>>(devStates);
 
-    for (int iter = 0; iter < 1; iter++){//epoch; iter++){
+    cudaDeviceSynchronize();
 
+    // boucle principale
+    for (int iter = 0; iter < epoch; iter++){//epoch; iter++){
 
         // init new pop
-        float* new_pop = new float[size];
+        double* new_pop = new double[size];
         //for (int i = 0; i < size; i++) {
-        //    new_pop[i] = positions[i];
+        //new_pop[i] = positions[i];
         //}
-        cudaMemcpy(devNewPos, new_pop, sizeof(float) * size, cudaMemcpyHostToDevice);
+
+        // Copy particle datas from host to device
+        /**
+         * Copy in GPU memory the data from the host
+         * */
+        cudaMemcpy(devPos, positions, sizeof(double) * size, cudaMemcpyHostToDevice);
+        cudaMemcpy(devVel, velocities, sizeof(double) * size, cudaMemcpyHostToDevice);
+        cudaMemcpy(devTar, targets, sizeof(double) * pop_size, cudaMemcpyHostToDevice);
+        cudaMemcpy(devBst, g_best, sizeof(double) * dimension, cudaMemcpyHostToDevice);
+        cudaMemcpy(devNewPos, new_pop, sizeof(double) * size, cudaMemcpyHostToDevice);
 
         // Réalisation du bat algo
-        update_position<<<blocksNum, threadsNum>>>(devPos, devNewPos, devVel, devBst, pop_size, dimension, fit_function);
+        update_position<<<blocksNum, threadsNum>>>(devPos, devNewPos, devVel, devBst, pop_size, dimension, fit_function, devStates);
 
         cudaDeviceSynchronize();
 
@@ -202,18 +296,8 @@ extern "C" void cuda_pso(float* positions, float* velocities, float* targets, fl
             fflush(stdout);
         }
 
-        cudaMemcpy(new_pop, devNewPos, sizeof(float) * size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(g_best, devBst, sizeof(float) * dimension, cudaMemcpyDeviceToHost);
-
-        // Vérification
-        printf("Initial g_best values:\n");
-        for (int j = 0; j < dimension; ++j) {
-            printf("g_best[%d] = %f\n", j, g_best[j]);
-        }
-
         // init pop_child
-        float* pop_child = new float[size];
-        float* bat = new float[dimension];
+        double* pop_child = new double[size];
         bool* pop_child_idx = new bool[pop_size];
         for (int i = 0; i < size; i++){
             pop_child[i] = 0;//positions[i];
@@ -222,12 +306,11 @@ extern "C" void cuda_pso(float* positions, float* velocities, float* targets, fl
             pop_child_idx[i] = false;
         }
 
-        cudaMemcpy(devPosChl, pop_child, sizeof(float) * size, cudaMemcpyHostToDevice);
+        cudaMemcpy(devPosChl, pop_child, sizeof(double) * size, cudaMemcpyHostToDevice);
         cudaMemcpy(devPosChlIdx, pop_child_idx, sizeof(bool) * pop_size, cudaMemcpyHostToDevice);
-        cudaMemcpy(devBat, bat, sizeof(float) * dimension, cudaMemcpyHostToDevice);
 
         // Vérification des performances
-        check_new_pos<<<blocksNum, threadsNum>>>(devPos, devNewPos, devPosChl, devPosChlIdx, devTar, devBst, devBat, fit_function, dimension);
+        check_new_pos<<<blocksNum, threadsNum>>>(devPos, devNewPos, devPosChl, devPosChlIdx, devTar, devBst, fit_function, dimension, pop_size, devStates);
 
         cudaDeviceSynchronize();
 
@@ -237,34 +320,85 @@ extern "C" void cuda_pso(float* positions, float* velocities, float* targets, fl
             fflush(stdout);
         }
 
+        // debug //
+        //cudaMemcpy(new_pop, devNewPos, sizeof(double) * size, cudaMemcpyDeviceToHost);
+        //cudaMemcpy(pop_child, devPosChl, sizeof(double) * size, cudaMemcpyDeviceToHost);
+        //cudaMemcpy(pop_child_idx, devPosChlIdx, sizeof(bool) * pop_size, cudaMemcpyDeviceToHost);
+        //cudaMemcpy(positions, devPos, sizeof(double) * size, cudaMemcpyDeviceToHost);
+
         // Edit new_pop with pop_child
-        cudaMemcpy(new_pop, devNewPos, sizeof(float) * size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(pop_child, devPosChl, sizeof(float) * size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(pop_child_idx, devPosChlIdx, sizeof(bool) * pop_size, cudaMemcpyDeviceToHost);
+        update_new_pop<<<blocksNum, threadsNum>>>(devNewPos, devPosChl, devPosChlIdx, pop_size, dimension, fit_function);
 
-//        printf("Random : %f \n", getRandomClamped());
-//        printf("Nouvelle population époque %d :\n", iter + 1);
-//        for (int i = 0; i < 1; i++) {
-//            printf("Chauve-souris %d : [", i);
-//            for (int j = 0; j < dimension; j++) {
-//                printf("%f", new_pop[i * dimension + j]);
-//                if (j < dimension - 1) printf(", ");
-//            }
-//            printf("]\n");
-//        }
+        cudaDeviceSynchronize();
 
-        for (int i = 0; i < pop_size; i++) {
-            printf("Chauve-souris %d (actif : %s) : [", i, pop_child_idx[i] ? "true" : "false");
+        cudaError_t c_err = cudaGetLastError();
+        if (c_err != cudaSuccess) {
+            printf("Erreur CUDA après update_new_pop: %s\n", cudaGetErrorString(c_err));
+            fflush(stdout);
         }
 
         // Edit population
+        Update_target_and_pop<<<blocksNum, threadsNum>>>(devPos, devNewPos, devTar, pop_size, dimension, fit_function);
 
+        cudaDeviceSynchronize();
+
+        // Update g_best
+        kernel_update_g_Best<<<blocksNum, threadsNum>>>(devPos, devBst, pop_size, dimension, fit_function);
+
+        cudaDeviceSynchronize();
+
+        // essayer ce truc la
+        //cudaMemcpy(positions, devNewPos, sizeof(double) * size, cudaMemcpyDeviceToHost);
+
+        cudaMemcpy(positions, devPos, sizeof(double) * size, cudaMemcpyDeviceToHost);
+        cudaMemcpy(velocities, devVel, sizeof(double) * size, cudaMemcpyDeviceToHost);
+        cudaMemcpy(new_pop, devNewPos, sizeof(double) * size, cudaMemcpyDeviceToHost);
+        cudaMemcpy(targets, devTar, sizeof(double) * pop_size, cudaMemcpyDeviceToHost);
+        cudaMemcpy(g_best, devBst, sizeof(double) * dimension, cudaMemcpyDeviceToHost);
+        cudaMemcpy(pop_child, devPosChl, sizeof(double) * size, cudaMemcpyDeviceToHost);
+        cudaMemcpy(pop_child_idx, devPosChlIdx, sizeof(bool) * pop_size, cudaMemcpyDeviceToHost);
+        /*
+        // Edit population
+        for (int i = 0; i < size; i++) {
+            positions[i] = new_pop[i];
+        }
+
+        double* bat = new double[dimension];
 
         // Calcul final target
+        for (int i = 0; i < pop_size; ++i) {
+
+            // découpage par bat
+            for (int j = 0; j < dimension; ++j) {
+                bat[j] = positions[i * dimension + j];
+            }
+
+            targets[i] = host_init_target(bat, fit_function, dimension);
+            //printf("bats targets : %f \n", targets[i]);
+        }
 
 
         // Find best bat
+        int best_index = index_best_target(targets, pop_size);
+        //printf("best index : %i \n", best_index);
 
+        // Récupérer les coordonnées de la meilleure chauve-souris
+        for (int j = 0; j < dimension; ++j) {
+            bat[j] = positions[best_index * dimension + j];
+            //printf("bat : %f \n", bat[j]);
+        }
+        double current_best = host_init_target(bat, fit_function, dimension);
+
+        // Si la current_best est meilleur que g_best alors g_best = current
+        if (current_best < best_target){
+            best_target = current_best;
+            for (int j = 0; j < dimension; ++j) {
+                g_best[j] = bat[j];
+                //printf("g_best : %f \n", g_best[j]);
+            }
+        }*/
+
+        printf("best target : %f \n", host_init_target(g_best, fit_function, dimension));
 
         // Sup created var
         delete[] new_pop;
@@ -276,10 +410,9 @@ extern "C" void cuda_pso(float* positions, float* velocities, float* targets, fl
         pop_child_idx = nullptr;
     }
 
-    cudaMemcpy(positions, devPos, sizeof(float) * size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(velocities, devVel, sizeof(float) * pop_size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(targets, devTar, sizeof(float) * pop_size, cudaMemcpyDeviceToHost);
-    cudaMemcpy(g_best, devBst, sizeof(float) * dimension, cudaMemcpyDeviceToHost);
+
+
+
 
     // cleanup
     cudaFree(devPos);
@@ -289,14 +422,24 @@ extern "C" void cuda_pso(float* positions, float* velocities, float* targets, fl
     cudaFree(devBst);
     cudaFree(devPosChl);
     cudaFree(devPosChlIdx);
-
+/*
     printf("Population époque :\n");
-    for (int i = 0; i < 1; i++) {
+    for (int i = 0; i < pop_size; i++) {
         printf("Chauve-souris %d : [", i);
         for (int j = 0; j < dimension; j++) {
             printf("%f", positions[i * dimension + j]);
             if (j < dimension - 1) printf(", ");
         }
         printf("]\n");
+    }*/
+    cudaMemcpy(g_best, devBst, sizeof(double) * dimension, cudaMemcpyDeviceToHost);
+
+    printf("Best population :\n");
+    for (int j = 0; j < dimension; j++) {
+        printf("%f", g_best[j]);
+        if (j < dimension - 1) printf(", ");
     }
+    printf("]\n");
+
+    printf("final target : %f \n", host_init_target(g_best, fit_function, dimension));
 }
