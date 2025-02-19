@@ -3,7 +3,7 @@
 const int epoch = 5000;
 const double Ub = 10;
 const double Lb = -10;
-const double pulse_rate = 0.95;
+const double pulse_rate = 0.70;
 const double pfMin = 0.0;
 const double pfMax = 10.0;
 const double phi = 3.14159265358979323846;
