@@ -127,7 +127,7 @@ __global__ void check_new_pos(double *pop, double *new_pop, double *pop_child, b
             //printf("create pop child %i \n", i);
             for (int j = 0; j < dimension; j++){
                 // add solution close to best
-                double rand_best = curand_uniform(&state[i]);
+                double rand_best = Lb + (Ub - Lb) * curand_uniform(&state[i]);
                 double new_solution = g_best[j] + 0.01 * rand_best;
 
                 // change solution and insert born
@@ -246,8 +246,6 @@ void cuda_pso(double* positions, double* velocities, double* targets, double* g_
     bool *devPosChlIdx;
     curandState *devStates;
 
-
-
     // Memory allocation
     cudaMalloc((void**)&devPos, sizeof(double) * size);
     cudaMalloc((void**)&devNewPos, sizeof(double) * size);
@@ -267,26 +265,32 @@ void cuda_pso(double* positions, double* velocities, double* targets, double* g_
 
     cudaDeviceSynchronize();
 
+    // Copy particle datas from host to device
+    /**
+     * Copy in GPU memory the data from the host
+     * */
+    cudaMemcpy(devPos, positions, sizeof(double) * size, cudaMemcpyHostToDevice);
+    cudaMemcpy(devVel, velocities, sizeof(double) * size, cudaMemcpyHostToDevice);
+    cudaMemcpy(devTar, targets, sizeof(double) * pop_size, cudaMemcpyHostToDevice);
+    cudaMemcpy(devBst, g_best, sizeof(double) * dimension, cudaMemcpyHostToDevice);
+
     // boucle principale
     for (int iter = 0; iter < epoch; iter++){
 
         // init new pop
         double* new_pop = new double[size];
 
-        // Copy particle datas from host to device
-        /**
-         * Copy in GPU memory the data from the host
-         * */
-        cudaMemcpy(devPos, positions, sizeof(double) * size, cudaMemcpyHostToDevice);
-        cudaMemcpy(devVel, velocities, sizeof(double) * size, cudaMemcpyHostToDevice);
-        cudaMemcpy(devTar, targets, sizeof(double) * pop_size, cudaMemcpyHostToDevice);
-        cudaMemcpy(devBst, g_best, sizeof(double) * dimension, cudaMemcpyHostToDevice);
         cudaMemcpy(devNewPos, new_pop, sizeof(double) * size, cudaMemcpyHostToDevice);
 
         // Réalisation du bat algo
         update_position<<<blocksNum, threadsNum>>>(devPos, devNewPos, devVel, devBst, pop_size, dimension, fit_function, devStates);
 
         cudaDeviceSynchronize();
+
+        cudaError_t e_err = cudaGetLastError();
+        if (e_err != cudaSuccess) {
+            printf("CUDA Error: %s\n", cudaGetErrorString(e_err));
+        }
 
         // init pop_child
         double* pop_child = new double[size];
@@ -306,28 +310,45 @@ void cuda_pso(double* positions, double* velocities, double* targets, double* g_
 
         cudaDeviceSynchronize();
 
+        cudaError_t a_err = cudaGetLastError();
+        if (a_err != cudaSuccess) {
+            printf("CUDA Error: %s\n", cudaGetErrorString(a_err));
+        }
+
         // Edit new_pop with pop_child
         update_new_pop<<<blocksNum, threadsNum>>>(devNewPos, devPosChl, devPosChlIdx, pop_size, dimension, fit_function);
 
         cudaDeviceSynchronize();
+
+        cudaError_t b_err = cudaGetLastError();
+        if (b_err != cudaSuccess) {
+            printf("CUDA Error: %s\n", cudaGetErrorString(b_err));
+        }
 
         // Edit population
         Update_target_and_pop<<<blocksNum, threadsNum>>>(devPos, devNewPos, devTar, pop_size, dimension, fit_function);
 
         cudaDeviceSynchronize();
 
+        cudaError_t c_err = cudaGetLastError();
+        if (c_err != cudaSuccess) {
+            printf("CUDA Error: %s\n", cudaGetErrorString(c_err));
+        }
+
         // Update g_best
         kernel_update_g_Best<<<blocksNum, threadsNum>>>(devPos, devBst, pop_size, dimension, fit_function);
 
         cudaDeviceSynchronize();
 
-        cudaMemcpy(positions, devPos, sizeof(double) * size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(velocities, devVel, sizeof(double) * size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(new_pop, devNewPos, sizeof(double) * size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(targets, devTar, sizeof(double) * pop_size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(g_best, devBst, sizeof(double) * dimension, cudaMemcpyDeviceToHost);
-        cudaMemcpy(pop_child, devPosChl, sizeof(double) * size, cudaMemcpyDeviceToHost);
-        cudaMemcpy(pop_child_idx, devPosChlIdx, sizeof(bool) * pop_size, cudaMemcpyDeviceToHost);
+        cudaError_t d_err = cudaGetLastError();
+        if (d_err != cudaSuccess) {
+            printf("CUDA Error: %s\n", cudaGetErrorString(d_err));
+        }
+
+        //cudaMemcpy(new_pop, devNewPos, sizeof(double) * size, cudaMemcpyDeviceToHost);
+
+        //cudaMemcpy(pop_child, devPosChl, sizeof(double) * size, cudaMemcpyDeviceToHost);
+        //cudaMemcpy(pop_child_idx, devPosChlIdx, sizeof(bool) * pop_size, cudaMemcpyDeviceToHost);
 
         //printf("best target : %f \n", host_init_target(g_best, fit_function, dimension));
 
@@ -342,6 +363,12 @@ void cuda_pso(double* positions, double* velocities, double* targets, double* g_
     }
 
 
+    cudaMemcpy(positions, devPos, sizeof(double) * size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(velocities, devVel, sizeof(double) * size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(targets, devTar, sizeof(double) * pop_size, cudaMemcpyDeviceToHost);
+    cudaMemcpy(g_best, devBst, sizeof(double) * dimension, cudaMemcpyDeviceToHost);
+
+
 
 
 
@@ -353,8 +380,6 @@ void cuda_pso(double* positions, double* velocities, double* targets, double* g_
     cudaFree(devBst);
     cudaFree(devPosChl);
     cudaFree(devPosChlIdx);
-
-    cudaMemcpy(g_best, devBst, sizeof(double) * dimension, cudaMemcpyDeviceToHost);
 
     printf("Best population :\n");
     for (int j = 0; j < dimension; j++) {

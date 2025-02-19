@@ -28,16 +28,11 @@ void BA_CUDAS() {
                 resultFile << objFunc << "," << dim << "," << popSize;
 
                 for (int iter = 0; iter < 10; ++iter) {
-                    //double positions[dim * popSize];
-                    //double velocities[dim * popSize];
-                    //double targets[popSize];
-                    //double g_best[dim];
+                    double positions[dim * popSize];
+                    double velocities[dim * popSize];
+                    double targets[popSize];
+                    double g_best[dim];
                     double best_target;
-
-                    double* positions = new double[dim * popSize];
-                    double* velocities = new double[dim * popSize];
-                    double* targets = new double[popSize];
-                    double* g_best = new double[dim];
 
                     for (int i = 0; i < dim * popSize; ++i) {
                         // Init positions pop
@@ -75,11 +70,6 @@ void BA_CUDAS() {
 
                     // Ajout du résultat en colonne et ajout du temps GPU total
                     resultFile << "," << host_init_target(g_best, objFunc, dim) << "," << gpu_time;
-
-                    delete[] positions;
-                    delete[] velocities;
-                    delete[] targets;
-                    delete[] g_best;
                 }
 
                 resultFile << "\n";
