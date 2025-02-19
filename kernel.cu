@@ -193,11 +193,13 @@ __global__ void Update_target_and_pop(double *positions, double *new_pop, double
 
     double* bat = new double[dimension];
 
+    // Mise à jour de positions par new_pop
     for (int j = 0; j < dimension; ++j) {
         positions[i * dimension + j] = new_pop[i * dimension + j];
         bat[j] = new_pop[i * dimension + j];
     }
 
+    // mise à jour de la target
     target[i] = init_target(bat, fit_function, dimension);
 
 
@@ -222,6 +224,7 @@ __global__ void kernel_update_g_Best(double *positions, double *g_best, int pop_
         bat[j] = positions[i * dimension + j];
     }
 
+    // si la chauves souris est meilleur que g_best
     if (init_target(bat, fit_function, dimension) < init_target(g_best, fit_function, dimension))
     {
         for (int k = 0; k < dimension; k++)
